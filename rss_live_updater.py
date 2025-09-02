@@ -1,0 +1,175 @@
+import requests
+import time
+import datetime
+
+GET_URL = "https://udiztgv6d4.execute-api.us-east-1.amazonaws.com/prod/news/all?limit=10"
+POST_URL = "https://udiztgv6d4.execute-api.us-east-1.amazonaws.com/prod/news/update"
+TEAMS_WEBHOOK_URL = (
+    "https://ncompasstv.webhook.office.com/webhookb2/"
+    "6054878d-e313-4b65-9127-083fac7ddd33@1eaf2bcc-132e-484c-b41a-19f0cb740202/"
+    "IncomingWebhook/d969c5ccaffa4573b3e8b96b72693e35/"
+    "b989b04e-b645-4e79-9e63-7f4e00f04616/V2kbfWI_Kp3FhwEt0nedxFvk2i_UktBAnYP24tIg0cWh41"
+)
+ 
+HEADERS = {"Content-Type": "application/json", "User-Agent": "rss-updater/1.0"}
+
+# Fixed schedule snapped to :00 / :30
+SCHEDULE_HOURS   = [0, 5, 9, 14, 19]
+SCHEDULE_MINUTES = [0, 0, 30, 30, 0]
+
+'''
+Schedule Runs at:
+
+12:00 AM
+
+5:00 AM
+
+9:30 AM
+
+2:30 PM
+
+7:00 PM
+
+'''
+
+
+def send_to_teams(message: str):
+    try:
+        payload = {"text": message}
+        resp = requests.post(TEAMS_WEBHOOK_URL, json=payload, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"⚠️ Failed to send message to Teams: {e}")
+
+
+def fetch_outdated():
+    try:
+        resp = requests.get(GET_URL, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"❌ Failed to fetch outdated feeds: {e}")
+        return []
+
+
+def update_feed(item, failures):
+    payload = {"Url": item.get("url"), "Data": item.get("data")}
+    try:
+        resp = requests.post(POST_URL, json=payload, headers=HEADERS, timeout=15)
+        if resp.status_code == 200:
+            print(f"✅ Updated {payload['Url']}")
+            return True
+        else:
+            reason = f"Status {resp.status_code}"
+            print(f"❌ Failed {payload['Url']} | {reason}")
+            failures.append((payload['Url'], reason))
+            return False
+    except Exception as e:
+        reason = str(e)
+        print(f"❌ Error updating {payload['Url']}: {reason}")
+        failures.append((payload['Url'], reason))
+        return False
+
+
+def run_until_empty():
+    """
+    Keep pulling batches of 10 until:
+      - GET returns nothing (all done)
+      - or the only remaining items are ones that keep failing
+    """
+    all_failures = []
+
+    while True:
+        items = fetch_outdated()
+        if not items:
+            print("📭 No more outdated feeds.")
+            break
+
+        print(f"📦 Found {len(items)} outdated feeds")
+        failures = []
+
+        for item in items:
+            update_feed(item, failures)
+
+        # Retry failures once immediately
+        if failures:
+            print(f"⚠️ {len(failures)} feeds failed. Retrying once...")
+            still_failed = []
+            for item in failures:
+                if not update_feed({"url": item[0], "data": None}, still_failed):
+                    # preserve original error reason if retry fails again
+                    still_failed.append(item)
+
+            if still_failed:
+                print(f"🚫 {len(still_failed)} feeds could not be updated.")
+                all_failures.extend(still_failed)
+            else:
+                print("✅ All failed feeds succeeded on retry.")
+
+        # If everything in this batch failed, stop (avoid infinite loop)
+        if len(failures) == len(items):
+            print("🛑 All current items failed. Stopping loop.")
+            break
+
+    # --- TEAMS REPORT ---
+    if not all_failures:
+        msg = (
+            "🌸 Heyya~ FeedFeeder-chan reporting in! 🌸\n\n"
+            "(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧ **RSS Updated Successfully!**\n\n"
+            "All the feeds have been taken care of, nice and clean! ✨\n"
+            "No gremlins this time — smooth sailing~ 🚀"
+        )
+    else:
+        msg = (
+            "🌸 Heyya~ FeedFeeder-chan reporting in! 🌸\n\n"
+            "(•﹏•) **RSS Updated (but with some hiccups...)**\n\n"
+            f"I tried my best, but {len(all_failures)} feeds didn’t want to behave 🤕\n\n"
+            "Here’s the list of the stubborn ones:\n"
+        )
+        for url, reason in all_failures:
+            msg += f"- URL: {url} | Error: {reason}\n"
+
+    send_to_teams(msg)
+
+
+def get_next_run(now=None):
+    if now is None:
+        now = datetime.datetime.now()
+
+    today = now.date()
+    scheduled_times = [
+        datetime.datetime.combine(today, datetime.time(h, m))
+        for h, m in zip(SCHEDULE_HOURS, SCHEDULE_MINUTES)
+    ]
+
+    # Find next scheduled time today
+    for t in scheduled_times:
+        if t > now:
+            return t
+
+    # Otherwise, return the first one tomorrow
+    tomorrow = today + datetime.timedelta(days=1)
+    return datetime.datetime.combine(tomorrow, datetime.time(SCHEDULE_HOURS[0], SCHEDULE_MINUTES[0]))
+
+
+def main():
+    # Always run once immediately
+    print("\nStarting RSS Updater...")
+    run_until_empty()
+
+    # Then align to schedule
+    while True:
+        next_run = get_next_run()
+        sleep_seconds = (next_run - datetime.datetime.now()).total_seconds()
+        time_str = next_run.strftime('%Y-%m-%d %I:%M %p').replace(" 0", " ")
+        print(f"😴 Sleeping until {time_str} ({sleep_seconds/60:.1f} minutes)...")
+
+        time.sleep(sleep_seconds)
+
+        print(f"\n🚀 Scheduled run at {datetime.datetime.now().strftime('%Y-%m-%d %I:%M %p').replace(' 0', ' ')}")
+
+        run_until_empty()
+
+
+if __name__ == "__main__":
+    main()
