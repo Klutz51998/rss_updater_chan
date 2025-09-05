@@ -84,8 +84,6 @@ def update_feed(item, failures = None):
 
     payload = {"Url": url, "Data": fresh_data}
     
-    print(f"{payload}")
-    
     try:
         resp = requests.post(POST_URL, json=payload, headers=HEADERS, timeout=15)
         if resp.status_code == 200:
@@ -111,37 +109,49 @@ def run_until_empty():
     """
     all_failures = []
 
-    while True:
-        items = fetch_outdated()
-        if not items:
-            print("📭 No more outdated feeds.")
-            break
+    try:
+        while True:
+            items = fetch_outdated()
 
-        print(f"📦 Found {len(items)} outdated feeds")
-        failures = []
+            # If API failed and returned nothing
+            if not items:
+                print("📭 No more outdated feeds.")
+                if not all_failures:  # nothing logged yet? mark it as a failure
+                    all_failures.append(("system", "No items returned (API timeout or error)"))
+                break
 
-        for item in items:
-            update_feed(item, failures)
+            # If we inserted an explicit error marker in fetch_outdated
+            if isinstance(items, list) and "error" in items[0]:
+                all_failures.append((items[0]["url"], items[0]["error"]))
+                break
 
-        # Retry failures once immediately
-        if failures:
-            print(f"⚠️ {len(failures)} feeds failed. Retrying once...")
-            still_failed = []
-            for item in failures:
-                if not update_feed({"url": item[0], "data": None}, still_failed):
-                    # preserve original error reason if retry fails again
-                    still_failed.append(item)
+            print(f"📦 Found {len(items)} outdated feeds")
+            failures = []
 
-            if still_failed:
-                print(f"🚫 {len(still_failed)} feeds could not be updated.")
-                all_failures.extend(still_failed)
-            else:
-                print("✅ All failed feeds succeeded on retry.")
+            for item in items:
+                update_feed(item, failures)
 
-        # If everything in this batch failed, stop (avoid infinite loop)
-        if len(failures) == len(items):
-            print("🛑 All current items failed. Stopping loop.")
-            break
+            # Retry failures once immediately
+            if failures:
+                print(f"⚠️ {len(failures)} feeds failed. Retrying once...")
+                still_failed = []
+                for url, reason in failures:
+                    if not update_feed({"url": url}, still_failed):
+                        still_failed.append((url, reason))
+
+                if still_failed:
+                    print(f"🚫 {len(still_failed)} feeds could not be updated.")
+                    all_failures.extend(still_failed)
+                else:
+                    print("✅ All failed feeds succeeded on retry.")
+
+            # If everything in this batch failed, stop (avoid infinite loop)
+            if len(failures) == len(items):
+                print("🛑 All current items failed. Stopping loop.")
+                break
+
+    except Exception as e:
+        all_failures.append(("system", f"Crash: {e}"))
 
     # --- TEAMS REPORT ---
     if not all_failures:
@@ -162,6 +172,7 @@ def run_until_empty():
             msg += f"- URL: {url} | Error: {reason}\n"
 
     send_to_teams(msg)
+
 
 
 def get_next_run(now=None):
