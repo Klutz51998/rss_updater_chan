@@ -52,22 +52,54 @@ def fetch_outdated():
         return []
 
 
-def update_feed(item, failures):
-    payload = {"Url": item.get("url"), "Data": item.get("data")}
+def fetch_fresh_data(url: str):
+    """Fetch the actual RSS/XML content from the feed URL."""
+    try:
+        resp = requests.get(url, timeout=20, headers={"User-Agent": "rss-updater/1.0"})
+        resp.raise_for_status()
+        
+        return resp.text
+        
+    except Exception as e:
+        print(f"❌ Failed to fetch fresh data from {url}: {e}")
+        return None
+
+
+def update_feed(item, failures = None):
+    url = item.get("url")
+    
+    print(f"{url}")
+    
+    if not url:
+        print("⚠️ Missing URL in item, skipping.")
+        return False
+
+    # 🔄 Get fresh data from the feed source
+    fresh_data = fetch_fresh_data(url)
+    
+    if fresh_data is None:
+        reason = "Could not fetch fresh feed data"
+        failures.append((url, reason))
+        return False
+
+    payload = {"Url": url, "Data": fresh_data}
+    
+    print(f"{payload}")
+    
     try:
         resp = requests.post(POST_URL, json=payload, headers=HEADERS, timeout=15)
         if resp.status_code == 200:
-            print(f"✅ Updated {payload['Url']}")
+            print(f"✅ Updated {url}")
             return True
         else:
             reason = f"Status {resp.status_code}"
-            print(f"❌ Failed {payload['Url']} | {reason}")
-            failures.append((payload['Url'], reason))
+            print(f"❌ Failed {url} | {reason}")
+            failures.append((url, reason))
             return False
     except Exception as e:
         reason = str(e)
-        print(f"❌ Error updating {payload['Url']}: {reason}")
-        failures.append((payload['Url'], reason))
+        print(f"❌ Error updating {url}: {reason}")
+        failures.append((url, reason))
         return False
 
 
